@@ -16,6 +16,8 @@ targets:
     main: src/eve_shopping_api.cr
   micrate:
     main: src/micrate.cr
+  worker:
+    main: src/worker.cr
 
 dependencies:
   athena:
@@ -27,6 +29,9 @@ dependencies:
   pg:
     github: will/crystal-pg
     version: ~> 0.21.1
+  mosquito:
+    github: robacarp/mosquito
+    version: ~> 0.8.0
 
 development_dependencies:
   ameba:

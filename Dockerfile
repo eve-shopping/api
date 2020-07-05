@@ -10,8 +10,7 @@ RUN shards install --production
 COPY src/ /app/src/
 
 RUN shards build --release --production --no-debug --static
-RUN strip ./bin/api
-RUN strip ./bin/micrate
+RUN strip ./bin/api && strip ./bin/micrate && strip ./bin/worker
 
 COPY db/ /app/db/
 

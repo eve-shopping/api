@@ -32,7 +32,19 @@ shards:
     git: https://github.com/amberframework/micrate.git
     version: 0.8.0
 
+  mosquito:
+    git: https://github.com/robacarp/mosquito.git
+    version: 0.8.0
+
   pg:
     git: https://github.com/will/crystal-pg.git
     version: 0.21.1
+
+  pool:
+    git: https://github.com/ysbaddaden/pool.git
+    version: 0.2.3
+
+  redis:
+    git: https://github.com/stefanwille/crystal-redis.git
+    version: 2.6.0
 

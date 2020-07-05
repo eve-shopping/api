@@ -1,8 +1,0 @@
-FROM crystallang/crystal:0.35.1-alpine
-
-WORKDIR /app
-
-RUN apk add --update --no-cache curl
-RUN curl -fsSLo- https://raw.githubusercontent.com/samueleaton/sentry/master/install.cr | crystal eval
-
-ENTRYPOINT ["./sentry", "-n", "eve-shopping"]
