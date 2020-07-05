@@ -1,0 +1,14 @@
+FROM crystallang/crystal:0.35.1-alpine
+
+WORKDIR /app
+
+COPY ./shard.yml .
+COPY ./shard.lock .
+
+RUN shards install --production
+
+RUN apk add --update --no-cache curl bash nodejs npm
+
+RUN npm i -g nodemon
+
+ENTRYPOINT ["nodemon", "--exec", "crystal run", "--watch", "db", "--watch", "src"]
