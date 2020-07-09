@@ -17,7 +17,7 @@ CREATE TABLE "sde"."constellations"
 CREATE TABLE "sde"."systems"
 (
     -- system_id
-    "id"               INT              NOT NULL,
+    "id"               INT              NOT NULL PRIMARY KEY,
     "constellation_id" INT              NOT NULL REFERENCES "sde"."constellations",
     "region_id"        INT              NOT NULL REFERENCES "sde"."regions",
     "name"             TEXT             NOT NULL,
