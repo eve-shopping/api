@@ -8,6 +8,8 @@ Granite::Connections << Granite::Adapter::Pg.new(name: "eve-shopping", url: %(po
 
 Log.setup :debug
 
+require "./common"
+
 require "./models/**"
 require "./jobs/*"
 

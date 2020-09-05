@@ -43,12 +43,12 @@ class EveShoppingAPI::Models::Contract < Granite::Base
   table "contracts"
 
   @[ASRA::Name(deserialize: "contract_id")]
-  column id : Int64, primary: true, auto: false
+  column id : Int32, primary: true, auto: false
   column title : String
-  column status : EveShoppingAPI::Models::Contract::Status, converter: Granite::Converters::Enum(EveShoppingAPI::Models::Contract::Status, String)
-  column type : EveShoppingAPI::Models::Contract::Type, converter: Granite::Converters::Enum(EveShoppingAPI::Models::Contract::Type, String)
-  column availability : EveShoppingAPI::Models::Contract::Availability, converter: Granite::Converters::Enum(EveShoppingAPI::Models::Contract::Availability, String)
-  column origin : EveShoppingAPI::Models::Contract::Origin, converter: Granite::Converters::Enum(EveShoppingAPI::Models::Contract::Origin, String)
+  column status : EveShoppingAPI::Models::Contract::Status, converter: EveShoppingAPI::Models::StringEnumConverter(EveShoppingAPI::Models::Contract::Status, String)
+  column type : EveShoppingAPI::Models::Contract::Type, converter: EveShoppingAPI::Models::StringEnumConverter(EveShoppingAPI::Models::Contract::Type, String)
+  column availability : EveShoppingAPI::Models::Contract::Availability, converter: EveShoppingAPI::Models::StringEnumConverter(EveShoppingAPI::Models::Contract::Availability, String)
+  column origin : EveShoppingAPI::Models::Contract::Origin, converter: EveShoppingAPI::Models::StringEnumConverter(EveShoppingAPI::Models::Contract::Origin, String)
   column for_corporation : Bool = false
   column days_to_complete : Int32?
   column collateral : Float64?
@@ -61,18 +61,32 @@ class EveShoppingAPI::Models::Contract < Granite::Base
   column date_accepted : Time?
   column date_completed : Time?
 
-  belongs_to start_location : EveShoppingAPI::Models::Location, foreign_key: start_location_id : Int64
-  belongs_to end_location : EveShoppingAPI::Models::Location, foreign_key: end_location_id : Int64?
-  belongs_to assignee : EveShoppingAPI::Models::Caracter, foreign_key: asignee_id : Int32?
-  belongs_to acceptor : EveShoppingAPI::Models::Caracter, foreign_key: acceptor_id : Int32?
-  belongs_to issuer : EveShoppingAPI::Models::Caracter, foreign_key: issuer_id : Int32
+  belongs_to start_location : EveShoppingAPI::Models::Structure, foreign_key: start_location_id : Int64
+  belongs_to end_location : EveShoppingAPI::Models::Structure, foreign_key: end_location_id : Int64?
+  belongs_to assignee : EveShoppingAPI::Models::Character, foreign_key: assignee_id : Int32?
+  belongs_to acceptor : EveShoppingAPI::Models::Character, foreign_key: acceptor_id : Int32?
+  belongs_to issuer : EveShoppingAPI::Models::Character, foreign_key: issuer_id : Int32
   belongs_to issuer_corporation : EveShoppingAPI::Models::Corporation, foreign_key: issuer_corporation_id : Int32
-  belongs_to issuer_alliance : EveShoppingAPI::Models::Alliance, foreign_key: issuer_alliance_id : Int32
+  belongs_to issuer_alliance : EveShoppingAPI::Models::Alliance, foreign_key: issuer_alliance_id : Int32?
+
+  def id : Int32
+    @id.not_nil!
+  end
+
+  def is_start_station? : Bool
+    self.start_location_id < Int32::MAX
+  end
+
+  def is_end_station? : Bool
+    end_id = self.end_location_id
+    return false if end_id.nil?
+    end_id < Int32::MAX
+  end
 
   @[ASRA::PostDeserialize]
   private def normalize_data : Nil
     @price = nil if !self.type.item_exchange? && !self.type.auction?
     @buyout = nil unless self.type.auction?
-    @collateral = @reward = @days_to_complete = nil unless self.type.courier?
+    @collateral = @reward = @days_to_complete = @end_location_id = nil unless self.type.courier?
   end
 end
