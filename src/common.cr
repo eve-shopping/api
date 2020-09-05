@@ -7,8 +7,8 @@ module EveShoppingAPI::Models::StringEnumConverter(E, T)
   end
 
   def from_rs(result : ::DB::ResultSet) : E?
-    value = result.read(T?)
+    value = result.read(Bytes?)
     return nil if value.nil?
-    E.parse? value
+    E.parse? String.new value
   end
 end

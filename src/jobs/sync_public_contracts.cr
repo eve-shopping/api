@@ -1,4 +1,36 @@
-TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkpXVC1TaWduYXR1cmUtS2V5IiwidHlwIjoiSldUIn0.eyJzY3AiOiJlc2ktdW5pdmVyc2UucmVhZF9zdHJ1Y3R1cmVzLnYxIiwianRpIjoiYjZmMzgwYTktOTQ1Ny00ZGM3LWFkZWQtOThjYzE2YmRkMWQ3Iiwia2lkIjoiSldULVNpZ25hdHVyZS1LZXkiLCJzdWIiOiJDSEFSQUNURVI6RVZFOjIwNDc5MTgyOTEiLCJhenAiOiI2NzQ4MDI2Y2QzMjQ0ZjE2ODU2YzEzNDAyMjg1MGM5OCIsIm5hbWUiOiJCbGFja3Ntb2tlMTYiLCJvd25lciI6IlJIbkFBcjZPbklTSWx0TVpzSmdTSnhwbm5Gaz0iLCJleHAiOjE1OTkzMjc3MTksImlzcyI6ImxvZ2luLmV2ZW9ubGluZS5jb20ifQ.cJir04Sovj-csCVlxm-k_zPk7dYUj6mT6dJJDxVo3sSg-tRNyzwboVuowkkb6BEoLS8u6o4Dgyir9feVw9RHhZ_BETKx5rhARNzWnzxSWiyTbFtPoQYTroVpdJHbxXDcv64s62nvH-oZL6DZjmbSfJKUei3t9UflwZwpQi4FuWWtnRKtLgij2F_U3G9b0WJm9kdZxeS1Md-_JFQI4xvhRt7UuZGvz2bMYLBy_KOZzDWZe3y9qBy1mTSPxuQFU9EAtrm1fkkj0ZgZRyqy8rpjDCMarApI5foeOa0Y-AdX9ar5VLx-yVoYJfuWWxZbi7NQB5xtNKMbA76m_naqsV_AiA"
+class ESIClient
+  private ERROR_BACKOFF_LIMIT = 10
+
+  @remaining_errors = 100
+  @error_refresh = 0
+
+  def request(path : String, headers : HTTP::Headers = HTTP::Headers.new, & : HTTP::Client::Response ->)
+    self.with_client do |client|
+      client.get(path, headers) do |response|
+        @remaining_errors = response.headers["x-esi-error-limit-remain"].to_i
+        @error_refresh = response.headers["x-esi-error-limit-reset"].to_i
+
+        data = unless response.success?
+          Log.warn { "Request failed #{path}: #{response.body_io.gets_to_end}" }
+          nil
+        else
+          yield response
+        end
+
+        if @remaining_errors <= ERROR_BACKOFF_LIMIT
+          Log.info { "Reached error limit, sleeping..." }
+          sleep @error_refresh
+        end
+
+        data
+      end
+    end
+  end
+
+  private def with_client(& : HTTP::Client ->)
+    yield HTTP::Client.new "esi.evetech.net", tls: true
+  end
+end
 
 class SyncPublicContractsJob < Mosquito::PeriodicJob
   run_every 30.minutes
@@ -7,20 +39,35 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
   @corporation_alliance_map = Hash(Int32, Int32?).new
   @structure_corporation_map = Hash(Int64, Int32).new
 
-  def perform
-    regions = Channel(Bool).new
+  @esi_client = ESIClient.new
 
-    EveShoppingAPI::Models::SDE::Region.all.first(1).each do |region|
+  def perform
+    regions_channel = Channel(Bool).new
+    regions = EveShoppingAPI::Models::SDE::Region.all
+
+    outstanding_contract_ids = EveShoppingAPI::Models::Contract.all("WHERE status = 'outstanding'").map &.id
+
+    regions.each do |region|
       spawn do
         contract_data = Channel(Bool).new
 
-        Log.debug { "Resolving region: #{region.id}" }
+        Log.info { "Resolving region: #{region.id}" }
 
-        public_contracts = ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), HTTP::Client.get("https://esi.evetech.net/v1/contracts/public/#{region.id}").body, :json
+        public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
+          ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
+        end
 
-        location_ids = Set(Int64).new
+        if public_contracts.nil?
+          pp "NIL CONTRACTS"
+          exit
+        end
 
-        public_contracts.first(2).each do |contract|
+        public_contracts.each do |contract|
+          # Skip already saved contracts
+          next if outstanding_contract_ids.includes? contract.id
+
+          Log.info { "Processing new contract: #{contract.id}" }
+
           # Fix some data before processing it
           contract.availability = :public
           contract.status = :outstanding
@@ -28,29 +75,54 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
           self.resolve_issuer_affiliation contract
 
-          # Skip trying to save contracts whose locations could not be resolved
-          # E.x. Not public
-          unless self.resolve_start_location_affiliation contract
-            Log.debug { "Skipping contract #{contract.id}" }
-            next
+          if !contract.is_start_station?
+            # Skip trying to save contracts whose locations could not be resolved
+            # E.x. Not public
+            unless self.resolve_structure_affiliation contract.start_location_id
+              Log.info { "Skipping invalid contract #{contract.id}: private start location" }
+              next
+            end
+          end
+
+          if !contract.is_end_station? && (end_location_id = contract.end_location_id)
+            unless self.resolve_structure_affiliation end_location_id
+              Log.info { "Skipping invalid contract #{contract.id}: private end location" }
+              next
+            end
           end
 
           EveShoppingAPI::Models::Contract.adapter.database.transaction do
             contract.save!
-          end
 
-          pp contract
+            unless contract.is_start_station?
+              structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+              structure_affiliation.contract_id = contract.id
+              structure_affiliation.origin = :start
+              structure_affiliation.structure_id = contract.start_location_id
+              structure_affiliation.corporation_id = @structure_corporation_map[contract.start_location_id]
+              structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+              structure_affiliation.save!
+            end
+
+            if !contract.is_end_station? && (end_location_id = contract.end_location_id)
+              structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+              structure_affiliation.contract_id = contract.id
+              structure_affiliation.origin = :end
+              structure_affiliation.structure_id = end_location_id
+              structure_affiliation.corporation_id = @structure_corporation_map[end_location_id]
+              structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+              structure_affiliation.save!
+            end
+          end
         end
 
-        regions.send true
+        regions_channel.send true
       end
     end
 
-    1.times do
-      regions.receive
+    regions.size.times do
+      regions_channel.receive
     end
-
-    # self.store_affiliation_data
   end
 
   # Resolve alliance of the issuer
@@ -64,15 +136,10 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
       unless EveShoppingAPI::Models::Character.exists? character_id
         Log.debug { "Saving new character #{character_id}" }
 
-        response = HTTP::Client.get("https://esi.evetech.net/v4/characters/#{character_id}/")
+        return unless character = @esi_client.request "/v4/characters/#{character_id}/" do |response|
+                        EveShoppingAPI::Models::Character.from_json response.body_io
+                      end
 
-        # TODO: Handle retries
-        unless response.success?
-          Log.warn { "Unable to resolve character #{character_id}" }
-          return
-        end
-
-        character = EveShoppingAPI::Models::Character.from_json response.body
         character.id = character_id
         character.save!
       end
@@ -85,45 +152,32 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     contract.issuer_alliance_id = @corporation_alliance_map[contract.issuer_corporation_id]
   end
 
-  private def resolve_start_location_affiliation(contract : EveShoppingAPI::Models::Contract) : Bool
-    # No need to resolve affiliation data for stations as they are static data.
-    return true if contract.is_start_station? && !contract.type.courier?
-    return true if contract.is_start_station? && contract.is_end_station? && contract.type.courier?
-
-    start_location_id = contract.start_location_id
-
-    if @structure_corporation_map.has_key? start_location_id
-      Log.debug { "Reading structure from cache #{start_location_id}" }
+  private def resolve_structure_affiliation(structure_id : Int64) : Bool
+    if @structure_corporation_map.has_key? structure_id
+      Log.debug { "Reading structure from cache #{structure_id}" }
       return true
     end
 
-    Log.debug { "Caching structure #{start_location_id}" }
+    Log.debug { "Caching structure #{structure_id}" }
 
-    response = HTTP::Client.get "https://esi.evetech.net/v2/universe/structures/#{start_location_id}/", headers: HTTP::Headers{"authorization" => "Bearer #{TOKEN}"}
+    return false unless structure = @esi_client.request "/v2/universe/structures/#{structure_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+                          EveShoppingAPI::Models::Structure.from_json response.body_io
+                        end
 
-    # TODO: Handle retries
-    unless response.success?
-      Log.warn { "Unable to resolve structure #{start_location_id}: #{response.status_code}" }
-      return false
-    end
+    structure.id = structure_id
 
-    structure = EveShoppingAPI::Models::Structure.from_json response.body
-    structure.id = start_location_id
-
-    unless EveShoppingAPI::Models::Structure.exists? start_location_id
-      Log.debug { "Saving new start location #{start_location_id}" }
+    unless EveShoppingAPI::Models::Structure.exists? structure_id
+      Log.debug { "Saving new start location #{structure_id}" }
       structure.save!
     end
 
     corporation_id = structure.owner_id.not_nil!
 
-    @structure_corporation_map[start_location_id] = corporation_id
+    @structure_corporation_map[structure_id] = corporation_id
     self.resolve_corporation corporation_id
 
     true
   end
-
-  # private def resolve_station
 
   private def resolve_corporation(corporation_id : Int32) : Nil
     if @corporation_alliance_map.has_key? corporation_id
@@ -133,15 +187,10 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     Log.debug { "Caching corporation #{corporation_id}" }
 
-    response = HTTP::Client.get("https://esi.evetech.net/v4/corporations/#{corporation_id}/")
+    return unless corporation = @esi_client.request "/v4/corporations/#{corporation_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+                    EveShoppingAPI::Models::Corporation.from_json response.body_io
+                  end
 
-    # TODO: Handle retries
-    unless response.success?
-      Log.warn { "Unable to resolve corporation #{corporation_id}" }
-      return
-    end
-
-    corporation = EveShoppingAPI::Models::Corporation.from_json response.body
     corporation.id = corporation_id
 
     unless EveShoppingAPI::Models::Corporation.exists? corporation_id
@@ -151,17 +200,12 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     corporation.alliance_id.try do |alliance_id|
       unless EveShoppingAPI::Models::Alliance.exists? alliance_id
-        response = HTTP::Client.get("https://esi.evetech.net/v3/alliances/#{alliance_id}/")
-
-        # TODO: Handle retries
-        unless response.success?
-          Log.warn { "Unable to resolve alliance #{alliance_id}" }
-          return
-        end
-
         Log.debug { "Saving new alliance #{alliance_id}" }
 
-        alliance = EveShoppingAPI::Models::Alliance.from_json response.body
+        return unless alliance = @esi_client.request "/v3/alliances/#{alliance_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+                        EveShoppingAPI::Models::Alliance.from_json response.body_io
+                      end
+
         alliance.id = alliance_id
         alliance.save!
       end
