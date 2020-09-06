@@ -12,15 +12,15 @@ class ESIClient
       end
 
       client.get(path, headers) do |response|
-        @remaining_errors = response.headers["x-esi-error-limit-remain"].to_i
-        @error_refresh = response.headers["x-esi-error-limit-reset"].to_i + 1
-
         data = unless response.success?
           Log.warn { "Request failed #{path}: #{response.body_io.gets_to_end}" }
           nil
         else
           yield response
         end
+
+        @remaining_errors = response.headers["x-esi-error-limit-remain"].to_i
+        @error_refresh = response.headers["x-esi-error-limit-reset"].to_i + 1
 
         data
       end
@@ -47,76 +47,80 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     outstanding_contract_ids = EveShoppingAPI::Models::Contract.all("WHERE status = 'outstanding'").map &.id
 
+    sem = Concurrent::Semaphore.new 20
+
     regions.each do |region|
       spawn do
-        contract_data = Channel(Bool).new
+        sem.acquire do
+          contract_data = Channel(Bool).new
 
-        Log.info { "Resolving region: #{region.id}" }
+          Log.info { "Resolving region: #{region.id}" }
 
-        public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
-          ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
-        end
-
-        if public_contracts.nil?
-          pp "NIL CONTRACTS"
-          exit
-        end
-
-        public_contracts.each do |contract|
-          # Skip already saved contracts
-          next if outstanding_contract_ids.includes? contract.id
-
-          Log.info { "Processing new contract: #{contract.id}" }
-
-          # Fix some data before processing it
-          contract.availability = :public
-          contract.status = :outstanding
-          contract.origin = :public
-
-          self.resolve_issuer_affiliation contract
-
-          if !contract.is_start_station?
-            # Skip trying to save contracts whose locations could not be resolved
-            # E.x. Not public
-            unless self.resolve_structure_affiliation contract.start_location_id
-              Log.info { "Skipping invalid contract #{contract.id}: private start location" }
-              next
-            end
+          public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
+            ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
           end
 
-          if !contract.is_end_station? && (end_location_id = contract.end_location_id)
-            unless self.resolve_structure_affiliation end_location_id
-              Log.info { "Skipping invalid contract #{contract.id}: private end location" }
-              next
-            end
+          if public_contracts.nil?
+            pp "NIL CONTRACTS"
+            exit
           end
 
-          EveShoppingAPI::Models::Contract.adapter.database.transaction do
-            contract.save!
+          public_contracts.each do |contract|
+            # Skip already saved contracts
+            next if outstanding_contract_ids.includes? contract.id
 
-            unless contract.is_start_station?
-              structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
-              structure_affiliation.contract_id = contract.id
-              structure_affiliation.origin = :start
-              structure_affiliation.structure_id = contract.start_location_id
-              structure_affiliation.corporation_id = @structure_corporation_map[contract.start_location_id]
-              structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
-              structure_affiliation.save!
+            Log.info { "Processing new contract: #{contract.id}" }
+
+            # Fix some data before processing it
+            contract.availability = :public
+            contract.status = :outstanding
+            contract.origin = :public
+
+            self.resolve_issuer_affiliation contract
+
+            if !contract.is_start_station?
+              # Skip trying to save contracts whose locations could not be resolved
+              # E.x. Not public
+              unless self.resolve_structure_affiliation contract.start_location_id
+                Log.info { "Skipping invalid contract #{contract.id}: private start location" }
+                next
+              end
             end
 
             if !contract.is_end_station? && (end_location_id = contract.end_location_id)
-              structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
-              structure_affiliation.contract_id = contract.id
-              structure_affiliation.origin = :end
-              structure_affiliation.structure_id = end_location_id
-              structure_affiliation.corporation_id = @structure_corporation_map[end_location_id]
-              structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
-              structure_affiliation.save!
+              unless self.resolve_structure_affiliation end_location_id
+                Log.info { "Skipping invalid contract #{contract.id}: private end location" }
+                next
+              end
+            end
+
+            EveShoppingAPI::Models::Contract.adapter.database.transaction do
+              contract.save!
+
+              unless contract.is_start_station?
+                structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+                structure_affiliation.contract_id = contract.id
+                structure_affiliation.origin = :start
+                structure_affiliation.structure_id = contract.start_location_id
+                structure_affiliation.corporation_id = @structure_corporation_map[contract.start_location_id]
+                structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+                structure_affiliation.save!
+              end
+
+              if !contract.is_end_station? && (end_location_id = contract.end_location_id)
+                structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+                structure_affiliation.contract_id = contract.id
+                structure_affiliation.origin = :end
+                structure_affiliation.structure_id = end_location_id
+                structure_affiliation.corporation_id = @structure_corporation_map[end_location_id]
+                structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+                structure_affiliation.save!
+              end
             end
           end
-        end
 
-        regions_channel.send true
+          regions_channel.send true
+        end
       end
     end
 

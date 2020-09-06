@@ -35,6 +35,9 @@ dependencies:
   mosquito:
     github: robacarp/mosquito
     version: ~> 0.8.0
+  concurrent:
+    github: didactic-drunk/concurrent.cr
+    version: ~> 0.1.0
 
 development_dependencies:
   ameba:
