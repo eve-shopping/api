@@ -26,7 +26,7 @@ class ESIClient
           end
 
           # TODO: Retry these
-          return nil if response.status.server_error?
+          raise Exception.new response_body if response.status.server_error?
 
           nil
         else
@@ -62,6 +62,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     regions = EveShoppingAPI::Models::SDE::Region.all
 
     outstanding_contract_ids = EveShoppingAPI::Models::Contract.all("WHERE status = 'outstanding'").map &.id
+    active_contract_ids = Array(Int32).new
     @private_structure_ids = EveShoppingAPI::Models::PrivateStructure.all.map &.id.not_nil!
 
     sem = Concurrent::Semaphore.new 20
@@ -73,11 +74,20 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
           Log.info { "Processing contracts in region #{region.id}" }
 
-          public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
-            ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
-          end.not_nil!
+          begin
+            public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
+              ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
+            end.not_nil!
+          rescue ex : Exception
+            # TODO: Build retries on server errors into the client
+            public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
+              ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
+            end.not_nil!
+          end
 
           public_contracts.each do |contract|
+            active_contract_ids << contract.id
+
             # Skip already saved contracts
             next if outstanding_contract_ids.includes? contract.id
 
@@ -136,6 +146,9 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
                 structure_affiliation.save!
               end
             end
+          rescue ex : Exception
+            Log.warn { "Skipping contract #{contract.id} due to exception: #{ex.message}" }
+            next
           end
 
           regions_channel.send true
@@ -146,6 +159,11 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     regions.size.times do
       regions_channel.receive
     end
+
+    missing_ids = outstanding_contract_ids - active_contract_ids
+
+    # Set missing contracts status to unknown since the actual outcome cannot be determined.
+    EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});) unless missing_ids.empty?
   end
 
   # Resolve alliance of the issuer
