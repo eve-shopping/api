@@ -1,8 +1,12 @@
+TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkpXVC1TaWduYXR1cmUtS2V5IiwidHlwIjoiSldUIn0.eyJzY3AiOiJlc2ktdW5pdmVyc2UucmVhZF9zdHJ1Y3R1cmVzLnYxIiwianRpIjoiZTRiZjExZTQtNWUxYS00MGMwLWI4NmYtMzg0NmMzZDIzMDgyIiwia2lkIjoiSldULVNpZ25hdHVyZS1LZXkiLCJzdWIiOiJDSEFSQUNURVI6RVZFOjIwNDc5MTgyOTEiLCJhenAiOiI2NzQ4MDI2Y2QzMjQ0ZjE2ODU2YzEzNDAyMjg1MGM5OCIsIm5hbWUiOiJCbGFja3Ntb2tlMTYiLCJvd25lciI6IlJIbkFBcjZPbklTSWx0TVpzSmdTSnhwbm5Gaz0iLCJleHAiOjE1OTkzNTUxMDcsImlzcyI6ImxvZ2luLmV2ZW9ubGluZS5jb20ifQ.IfWmKPu5azYWWxDpxx-PG7PoWhxUQVcDKaEDfdAI4pCIimZv_S8x8eOFUvTQpuP6ofFVmaQ5js75jOqK3Sqf8-LEoKoI26IjIU023A-0cPjTAIKz4RDZ09EZ2R6JUiF5Q3flN7q0NMWoFeLKTvk2HAgl3QK1A9lhwMEJPxFlf65ADLSBfzbhJmZoY3ur-hDF88ah78LJNM3dAoN61-3m5UeomjZg2zQhcKrYB4QK2EWD2JNL__Iperx1bMQcMTfi8MQQtEudEIMCMlgT6tTbcM71IfsqN3Kol5llrjMVtqBCFGyHixh1WyoFPavNyWR7H8SOaXVxjxE0xE6mnVJ8KA"
+
+require "concurrent/semaphore"
+
 class ESIClient
-  private ERROR_BACKOFF_LIMIT = 10
+  private ERROR_BACKOFF_LIMIT = 25
 
   @remaining_errors = 100
-  @error_refresh = 0
+  @error_refresh = 60
 
   def request(path : String, headers : HTTP::Headers = HTTP::Headers.new, & : HTTP::Client::Response ->)
     self.with_client do |client|
@@ -13,7 +17,16 @@ class ESIClient
 
       client.get(path, headers) do |response|
         data = unless response.success?
-          Log.warn { "Request failed #{path}: #{response.body_io.gets_to_end}" }
+          response_body = response.body_io.gets_to_end
+
+          Log.warn { "Request failed #{path}: #{response_body}" }
+
+          if response.status.forbidden? && response_body.includes? "Forbidden"
+            structure_id = path.match(/\/structures\/(\d+)\//).not_nil![1].to_i64
+
+            EveShoppingAPI::Models::PrivateStructure.create(id: structure_id)
+          end
+
           nil
         else
           yield response
@@ -39,6 +52,8 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
   @corporation_alliance_map = Hash(Int32, Int32?).new
   @structure_corporation_map = Hash(Int64, Int32).new
 
+  @private_structure_ids = [] of Int64
+
   @esi_client = ESIClient.new
 
   def perform
@@ -46,6 +61,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     regions = EveShoppingAPI::Models::SDE::Region.all
 
     outstanding_contract_ids = EveShoppingAPI::Models::Contract.all("WHERE status = 'outstanding'").map &.id
+    @private_structure_ids = EveShoppingAPI::Models::PrivateStructure.all.map &.id.not_nil!
 
     sem = Concurrent::Semaphore.new 20
 
@@ -58,16 +74,18 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
           public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
             ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
-          end
-
-          if public_contracts.nil?
-            pp "NIL CONTRACTS"
-            exit
-          end
+          end.not_nil!
 
           public_contracts.each do |contract|
             # Skip already saved contracts
             next if outstanding_contract_ids.includes? contract.id
+
+            # Skip private structures
+            next if @private_structure_ids.includes?(contract.start_location_id)
+
+            if (end_location_id = contract.end_location_id)
+              next if @private_structure_ids.includes?(end_location_id)
+            end
 
             Log.info { "Processing new contract: #{contract.id}" }
 
@@ -164,9 +182,14 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     Log.debug { "Caching structure #{structure_id}" }
 
-    return false unless structure = @esi_client.request "/v2/universe/structures/#{structure_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
-                          EveShoppingAPI::Models::Structure.from_json response.body_io
-                        end
+    structure = @esi_client.request "/v2/universe/structures/#{structure_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+      EveShoppingAPI::Models::Structure.from_json response.body_io
+    end
+
+    unless structure
+      @private_structure_ids << structure_id
+      return false
+    end
 
     structure.id = structure_id
 
