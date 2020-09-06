@@ -1,5 +1,3 @@
-TOKEN = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkpXVC1TaWduYXR1cmUtS2V5IiwidHlwIjoiSldUIn0.eyJzY3AiOiJlc2ktdW5pdmVyc2UucmVhZF9zdHJ1Y3R1cmVzLnYxIiwianRpIjoiZTRiZjExZTQtNWUxYS00MGMwLWI4NmYtMzg0NmMzZDIzMDgyIiwia2lkIjoiSldULVNpZ25hdHVyZS1LZXkiLCJzdWIiOiJDSEFSQUNURVI6RVZFOjIwNDc5MTgyOTEiLCJhenAiOiI2NzQ4MDI2Y2QzMjQ0ZjE2ODU2YzEzNDAyMjg1MGM5OCIsIm5hbWUiOiJCbGFja3Ntb2tlMTYiLCJvd25lciI6IlJIbkFBcjZPbklTSWx0TVpzSmdTSnhwbm5Gaz0iLCJleHAiOjE1OTkzNTUxMDcsImlzcyI6ImxvZ2luLmV2ZW9ubGluZS5jb20ifQ.IfWmKPu5azYWWxDpxx-PG7PoWhxUQVcDKaEDfdAI4pCIimZv_S8x8eOFUvTQpuP6ofFVmaQ5js75jOqK3Sqf8-LEoKoI26IjIU023A-0cPjTAIKz4RDZ09EZ2R6JUiF5Q3flN7q0NMWoFeLKTvk2HAgl3QK1A9lhwMEJPxFlf65ADLSBfzbhJmZoY3ur-hDF88ah78LJNM3dAoN61-3m5UeomjZg2zQhcKrYB4QK2EWD2JNL__Iperx1bMQcMTfi8MQQtEudEIMCMlgT6tTbcM71IfsqN3Kol5llrjMVtqBCFGyHixh1WyoFPavNyWR7H8SOaXVxjxE0xE6mnVJ8KA"
-
 require "concurrent/semaphore"
 
 class ESIClient
@@ -182,7 +180,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     Log.debug { "Caching structure #{structure_id}" }
 
-    structure = @esi_client.request "/v2/universe/structures/#{structure_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+    structure = @esi_client.request "/v2/universe/structures/#{structure_id}/", HTTP::Headers{"authorization" => "Bearer #{EveShoppingAPI::ServiceAccount.access_token}"} do |response|
       EveShoppingAPI::Models::Structure.from_json response.body_io
     end
 
@@ -214,7 +212,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
 
     Log.debug { "Caching corporation #{corporation_id}" }
 
-    return unless corporation = @esi_client.request "/v4/corporations/#{corporation_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+    return unless corporation = @esi_client.request "/v4/corporations/#{corporation_id}/" do |response|
                     EveShoppingAPI::Models::Corporation.from_json response.body_io
                   end
 
@@ -229,7 +227,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
       unless EveShoppingAPI::Models::Alliance.exists? alliance_id
         Log.debug { "Saving new alliance #{alliance_id}" }
 
-        return unless alliance = @esi_client.request "/v3/alliances/#{alliance_id}/", HTTP::Headers{"authorization" => "Bearer #{TOKEN}"} do |response|
+        return unless alliance = @esi_client.request "/v3/alliances/#{alliance_id}/" do |response|
                         EveShoppingAPI::Models::Alliance.from_json response.body_io
                       end
 
