@@ -14,7 +14,7 @@ RUN strip ./bin/api && strip ./bin/micrate && strip ./bin/worker
 
 COPY db/ /app/db/
 
-FROM scratch
+FROM alpine:3.12
 COPY --from=build /app/bin /
 COPY --from=build /app/db /db
 

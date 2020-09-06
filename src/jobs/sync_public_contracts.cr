@@ -9,7 +9,7 @@ class ESIClient
   def request(path : String, headers : HTTP::Headers = HTTP::Headers.new, & : HTTP::Client::Response ->)
     self.with_client do |client|
       if @remaining_errors <= ERROR_BACKOFF_LIMIT
-        Log.info { "Reached error limit, sleeping #{@error_refresh}" }
+        Log.warn { "Reached error limit, sleeping #{@error_refresh}" }
         sleep @error_refresh
       end
 
@@ -17,13 +17,16 @@ class ESIClient
         data = unless response.success?
           response_body = response.body_io.gets_to_end
 
-          Log.warn { "Request failed #{path}: #{response_body}" }
+          Log.info { "Request failed #{path}: #{response_body}" }
 
           if response.status.forbidden? && response_body.includes? "Forbidden"
             structure_id = path.match(/\/structures\/(\d+)\//).not_nil![1].to_i64
 
             EveShoppingAPI::Models::PrivateStructure.create(id: structure_id)
           end
+
+          # TODO: Retry these
+          return nil if response.status.server_error?
 
           nil
         else
@@ -68,7 +71,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
         sem.acquire do
           contract_data = Channel(Bool).new
 
-          Log.info { "Resolving region: #{region.id}" }
+          Log.info { "Processing contracts in region #{region.id}" }
 
           public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
             ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
@@ -154,7 +157,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
       Log.debug { "Caching character #{character_id}" }
 
       unless EveShoppingAPI::Models::Character.exists? character_id
-        Log.debug { "Saving new character #{character_id}" }
+        Log.info { "Saving new character #{character_id}" }
 
         return unless character = @esi_client.request "/v4/characters/#{character_id}/" do |response|
                         EveShoppingAPI::Models::Character.from_json response.body_io
@@ -192,7 +195,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     structure.id = structure_id
 
     unless EveShoppingAPI::Models::Structure.exists? structure_id
-      Log.debug { "Saving new start location #{structure_id}" }
+      Log.info { "Saving new structure #{structure_id}" }
       structure.save!
     end
 
@@ -219,13 +222,13 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     corporation.id = corporation_id
 
     unless EveShoppingAPI::Models::Corporation.exists? corporation_id
-      Log.debug { "Saving new corporation #{corporation_id}" }
+      Log.info { "Saving new corporation #{corporation_id}" }
       corporation.save!
     end
 
     corporation.alliance_id.try do |alliance_id|
       unless EveShoppingAPI::Models::Alliance.exists? alliance_id
-        Log.debug { "Saving new alliance #{alliance_id}" }
+        Log.info { "Saving new alliance #{alliance_id}" }
 
         return unless alliance = @esi_client.request "/v3/alliances/#{alliance_id}/" do |response|
                         EveShoppingAPI::Models::Alliance.from_json response.body_io
