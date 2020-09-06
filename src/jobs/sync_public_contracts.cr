@@ -6,20 +6,20 @@ class ESIClient
 
   def request(path : String, headers : HTTP::Headers = HTTP::Headers.new, & : HTTP::Client::Response ->)
     self.with_client do |client|
+      if @remaining_errors <= ERROR_BACKOFF_LIMIT
+        Log.info { "Reached error limit, sleeping #{@error_refresh}" }
+        sleep @error_refresh
+      end
+
       client.get(path, headers) do |response|
         @remaining_errors = response.headers["x-esi-error-limit-remain"].to_i
-        @error_refresh = response.headers["x-esi-error-limit-reset"].to_i
+        @error_refresh = response.headers["x-esi-error-limit-reset"].to_i + 1
 
         data = unless response.success?
           Log.warn { "Request failed #{path}: #{response.body_io.gets_to_end}" }
           nil
         else
           yield response
-        end
-
-        if @remaining_errors <= ERROR_BACKOFF_LIMIT
-          Log.info { "Reached error limit, sleeping..." }
-          sleep @error_refresh
         end
 
         data
@@ -214,38 +214,3 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     @corporation_alliance_map[corporation_id] = corporation.alliance_id
   end
 end
-
-# location_ids = data.map(&.["start_location_id"].as_i64).uniq
-
-# location_ids.each do |location_id|
-#   spawn do
-#     if location_id > 1_000_000_000_000
-#       structure_count += 1
-#       key = "structures"
-#     else
-#       station_count += 1
-#       key = "stations"
-#     end
-
-#     Log.debug { "Resolving #{key}: #{location_id}" }
-
-#     structure_data = HTTP::Client.get "https://esi.evetech.net/latest/universe/#{key}/#{location_id}/", headers: headers
-
-#     if structure_data.status.ok?
-#       resolved_structures[location_id] = JSON.parse(structure_data.body)["name"].as_s
-#     elsif structure_data.status.forbidden?
-#       resolved_structures[location_id] = "PRIVATE"
-#       private_structures += 1
-#     elsif structure_data.status.unauthorized?
-#       abort "TOKEN EXPIRED"
-#     else
-#       resolved_structures[location_id] = "ERROR"
-#     end
-
-#     structures.send true
-#   end
-# end
-
-# location_ids.size.times do
-#   structures.receive
-# end
