@@ -8,16 +8,11 @@ class ESIClient
 
   def request(path : String, headers : HTTP::Headers = HTTP::Headers.new, & : HTTP::Client::Response ->)
     self.with_client do |client|
-      if @remaining_errors <= ERROR_BACKOFF_LIMIT
-        Log.warn { "Reached error limit, sleeping #{@error_refresh}" }
-        sleep @error_refresh
-      end
-
       client.get(path, headers) do |response|
         data = unless response.success?
           response_body = response.body_io.gets_to_end
 
-          Log.info { "Request failed #{path}: #{response_body}" }
+          Log.notice { "Request failed #{path}: #{response_body}" }
 
           if response.status.forbidden? && response_body.includes? "Forbidden"
             structure_id = path.match(/\/structures\/(\d+)\//).not_nil![1].to_i64
@@ -41,7 +36,61 @@ class ESIClient
     end
   end
 
+  def request_all(path : String, type : T.class) : Array(T) forall T
+    self.with_client do |client|
+      response = client.get(path)
+
+      unless response.success?
+        Log.notice { "Request failed #{path}: #{response.body}" }
+        raise Exception.new response.body
+      end
+
+      data = ASR.serializer.deserialize Array(T), response.body, :json
+      pages = response.headers["x-pages"]?.try &.to_i
+
+      Log.info { "#{path} has #{pages} page(s)" }
+
+      return data if pages.nil? || pages == 1
+
+      data_channel = Channel(Array(T)).new
+
+      (2..pages).each do |page|
+        spawn do
+          self.with_client do |inner_client|
+            Log.debug { "Fetching page #{page} of #{path}" }
+
+            path_with_page = "#{path}?page=#{page}"
+
+            inner_client.get(path_with_page) do |response|
+              unless response.success?
+                Log.notice { "Request failed #{path_with_page}: #{response.body}" }
+                raise Exception.new response.body_io.gets_to_end
+              end
+
+              data_channel.send ASR.serializer.deserialize(Array(T), response.body_io, :json)
+            end
+          end
+        end
+      end
+
+      (pages - 1).times do
+        data.concat data_channel.receive
+      end
+
+      data
+    end
+  end
+
+  private def check_errors : Nil
+    if @remaining_errors <= ERROR_BACKOFF_LIMIT
+      Log.warn { "Reached error limit, sleeping #{@error_refresh}" }
+      sleep @error_refresh
+    end
+  end
+
   private def with_client(& : HTTP::Client ->)
+    self.check_errors
+
     yield HTTP::Client.new "esi.evetech.net", tls: true
   end
 end
@@ -75,17 +124,14 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
           Log.info { "Processing contracts in region #{region.id}" }
 
           begin
-            public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
-              ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
-            end.not_nil!
+            public_contracts = @esi_client.request_all("/v1/contracts/public/#{region.id}/", EveShoppingAPI::Models::Contract)
           rescue ex : Exception
-            # TODO: Build retries on server errors into the client
-            public_contracts = @esi_client.request("/v1/contracts/public/#{region.id}/") do |response|
-              ASR.serializer.deserialize Array(EveShoppingAPI::Models::Contract), response.body_io, :json
-            end.not_nil!
+            Log.warn { "Skipping region #{region.id} due to exception: #{ex.message}" }
+            regions_channel.send false
+            next
           end
 
-          public_contracts.each do |contract|
+          public_contracts.not_nil!.each do |contract|
             active_contract_ids << contract.id
 
             # Skip already saved contracts
@@ -98,7 +144,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
               next if @private_structure_ids.includes?(end_location_id)
             end
 
-            Log.info { "Processing new contract: #{contract.id}" }
+            Log.info { "Processing new contract #{contract.id} in region #{region.id}" }
 
             # Fix some data before processing it
             contract.availability = :public
@@ -111,14 +157,14 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
               # Skip trying to save contracts whose locations could not be resolved
               # E.x. Not public
               unless self.resolve_structure_affiliation contract.start_location_id
-                Log.info { "Skipping invalid contract #{contract.id}: private start location" }
+                Log.info { "Skipping invalid contract #{contract.id} in region #{region.id}: private start location" }
                 next
               end
             end
 
             if !contract.is_end_station? && (end_location_id = contract.end_location_id)
               unless self.resolve_structure_affiliation end_location_id
-                Log.info { "Skipping invalid contract #{contract.id}: private end location" }
+                Log.info { "Skipping invalid contract #{contract.id} in region #{region.id}: private end location" }
                 next
               end
             end
@@ -147,7 +193,7 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
               end
             end
           rescue ex : Exception
-            Log.warn { "Skipping contract #{contract.id} due to exception: #{ex.message}" }
+            Log.warn { "Skipping contract #{contract.id} in region #{region.id} due to exception: #{ex.message}" }
             next
           end
 
@@ -161,6 +207,8 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
     end
 
     missing_ids = outstanding_contract_ids - active_contract_ids
+
+    Log.info { "Invalidating #{missing_ids.size} contract(s)" }
 
     # Set missing contracts status to unknown since the actual outcome cannot be determined.
     EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});) unless missing_ids.empty?
