@@ -17,7 +17,7 @@ require "oauth2"
 
 module EveShoppingAPI::ServiceAccount
   private SCOPES = %w(esi-universe.read_structures.v1)
-  private class_getter refresh_token : String { File.read(ENV["SERVICE_ACCOUNT_REFRESH_TOKEN_FILE"]) + "==" }
+  private class_getter refresh_token : String { File.read(ENV["SERVICE_ACCOUNT_REFRESH_TOKEN_FILE"]) }
 
   @@expires_at : Time = Time.utc
   @@access_token : OAuth2::AccessToken? = nil
