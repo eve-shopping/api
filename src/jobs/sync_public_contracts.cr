@@ -52,29 +52,21 @@ class ESIClient
 
       return data if pages.nil? || pages == 1
 
-      data_channel = Channel(Array(T)).new
-
       (2..pages).each do |page|
-        spawn do
-          self.with_client do |inner_client|
-            Log.debug { "Fetching page #{page} of #{path}" }
+        self.with_client do |inner_client|
+          Log.debug { "Fetching page #{page} of #{path}" }
 
-            path_with_page = "#{path}?page=#{page}"
+          path_with_page = "#{path}?page=#{page}"
 
-            inner_client.get(path_with_page) do |response|
-              unless response.success?
-                Log.notice { "Request failed #{path_with_page}: #{response.body}" }
-                raise Exception.new response.body_io.gets_to_end
-              end
-
-              data_channel.send ASR.serializer.deserialize(Array(T), response.body_io, :json)
+          inner_client.get(path_with_page) do |response|
+            unless response.success?
+              Log.notice { "Request failed #{path_with_page}: #{response.body}" }
+              raise Exception.new response.body_io.gets_to_end
             end
+
+            data.concat ASR.serializer.deserialize(Array(T), response.body_io, :json)
           end
         end
-      end
-
-      (pages - 1).times do
-        data.concat data_channel.receive
       end
 
       data
@@ -202,16 +194,25 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
       end
     end
 
+    region_skipped = false
+
     regions.size.times do
-      regions_channel.receive
+      region_skipped = false == regions_channel.receive
     end
 
     missing_ids = outstanding_contract_ids - active_contract_ids
 
     Log.info { "Invalidating #{missing_ids.size} contract(s)" }
 
-    # Set missing contracts status to unknown since the actual outcome cannot be determined.
-    EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});) unless missing_ids.empty?
+    if missing_ids.size > 1_000
+      Log.error { "Attempted to invalidate too many contracts" }
+      return
+    end
+
+    if !missing_ids.empty? && !region_skipped
+      # Set missing contracts status to unknown since the actual outcome cannot be determined.
+      EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
+    end
   end
 
   # Resolve alliance of the issuer
