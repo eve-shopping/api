@@ -194,20 +194,17 @@ class SyncPublicContractsJob < Mosquito::PeriodicJob
       end
     end
 
-    region_skipped = false
+    region_skipped = nil
 
     regions.size.times do
-      region_skipped = false == regions_channel.receive
+      if regions_channel.receive == false && region_skipped.nil?
+        region_skipped = true
+      end
     end
 
     missing_ids = outstanding_contract_ids - active_contract_ids
 
     Log.info { "Invalidating #{missing_ids.size} contract(s)" }
-
-    if missing_ids.size > 1_000
-      Log.error { "Attempted to invalidate too many contracts" }
-      return
-    end
 
     if !missing_ids.empty? && !region_skipped
       # Set missing contracts status to unknown since the actual outcome cannot be determined.
