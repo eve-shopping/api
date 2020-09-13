@@ -15,6 +15,13 @@ RUN strip ./bin/api && strip ./bin/micrate && strip ./bin/worker
 COPY db/ /app/db/
 
 FROM alpine:3.12
+
+ARG GIT_COMMIT=unspecified
+LABEL org.opencontainers.image.revision=$GIT_COMMIT
+LABEL org.opencontainers.image.source=https://github.com/eve-shopping/api
+LABEL org.opencontainers.image.title="EVE Shopping API"
+LABEL org.opencontainers.image.description="REST API backend for eve.shopping"
+
 COPY --from=build /app/bin /
 COPY --from=build /app/db /db
 
