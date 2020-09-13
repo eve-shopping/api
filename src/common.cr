@@ -1,3 +1,5 @@
+require "./esi_client"
+
 module EveShoppingAPI::Models::StringEnumConverter(E, T)
   extend self
 
