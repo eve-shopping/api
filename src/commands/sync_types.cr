@@ -13,9 +13,9 @@ module EveShoppingAPI::Commands::SyncTypes
 
   private def self.execute_categories : Nil
     stored_ids = EveShoppingAPI::Models::SDE::Category.all.map &.id
-    upstream_id = @@esi_client.request_all("/v1/universe/categories/", Int32)
+    upstream_ids = @@esi_client.request_all("/v1/universe/categories/", Int32)
 
-    new_ids = upstream_id - stored_ids
+    new_ids = upstream_ids - stored_ids
 
     Log.info { "Saving #{new_ids.size} new categories" }
     new_ids.each do |id|
@@ -35,9 +35,9 @@ module EveShoppingAPI::Commands::SyncTypes
 
   private def self.execute_groups : Nil
     stored_ids = EveShoppingAPI::Models::SDE::Group.all.map &.id
-    upstream_id = @@esi_client.request_all("/v1/universe/groups/", Int32)
+    upstream_ids = @@esi_client.request_all("/v1/universe/groups/", Int32)
 
-    new_ids = upstream_id - stored_ids
+    new_ids = upstream_ids - stored_ids
 
     Log.info { "Saving #{new_ids.size} new groups" }
     new_ids.each do |id|
@@ -57,9 +57,9 @@ module EveShoppingAPI::Commands::SyncTypes
 
   private def self.execute_types : Nil
     stored_ids = EveShoppingAPI::Models::SDE::Type.all.map &.id
-    upstream_id = @@esi_client.request_all("/v1/universe/types/", Int32)
+    upstream_ids = @@esi_client.request_all("/v1/universe/types/", Int32)
 
-    new_ids = upstream_id - stored_ids
+    new_ids = upstream_ids - stored_ids
 
     Log.info { "Saving #{new_ids.size} new types" }
     new_ids.each do |id|
