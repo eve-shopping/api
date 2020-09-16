@@ -16,8 +16,10 @@ targets:
     main: src/eve_shopping_api.cr
   micrate:
     main: src/micrate.cr
-  worker:
-    main: src/worker.cr
+  periodic_worker:
+    main: src/periodic_worker.cr
+  async_worker:
+    main: src/async_worker.cr
   console:
     main: src/console.cr
 
