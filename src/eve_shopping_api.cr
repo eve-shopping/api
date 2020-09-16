@@ -5,7 +5,7 @@ require "./common"
 require "./models/**"
 require "./controllers/*"
 
-Log.setup :debug
+Log.setup "athena.*", :info
 
 module EveShoppingAPI
   VERSION = "0.1.0"

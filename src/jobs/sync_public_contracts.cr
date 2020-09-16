@@ -1,9 +1,7 @@
 require "concurrent/semaphore"
 
-class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
+struct EveShoppingAPI::Jobs::SyncPublicContractsJob
   Log = EveShoppingAPI::Jobs::Log.for "sync_contracts"
-
-  run_every 30.minutes
 
   @resolved_character_ids = Set(Int32).new
   @corporation_alliance_map = Hash(Int32, Int32?).new
@@ -13,7 +11,10 @@ class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
 
   @esi_client = ESIClient.new
 
-  def perform
+  def execute
+    Log.info { "Syncing public contracts" }
+    start_time = Time.monotonic
+
     regions_channel = Channel(Bool).new
     regions = EveShoppingAPI::Models::SDE::Region.all
 
@@ -24,10 +25,10 @@ class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
     sem = Concurrent::Semaphore.new 20
 
     regions.each do |region|
+      channel = EveShoppingAPI::AMQPConnectionFactory.channel
+
       spawn do
         sem.acquire do
-          contract_data = Channel(Bool).new
-
           Log.info { "Processing contracts in region #{region.id}" }
 
           begin
@@ -100,7 +101,7 @@ class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
               end
 
               # Enqueue a message to process the items within this contract
-              EveShoppingAPI::Jobs::ContractItems.new(contract.id).enqueue if contract.type.item_exchange? || contract.type.auction?
+              channel.basic_publish contract.id.to_json, exchange: "amq.topic", routing_key: "contract.items" if contract.type.item_exchange? || contract.type.auction?
             end
           rescue ex : Exception
             Log.warn { "Skipping contract #{contract.id} in region #{region.id} due to exception: #{ex.message}" }
@@ -109,6 +110,8 @@ class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
 
           regions_channel.send true
         end
+      ensure
+        channel.close
       end
     end
 
@@ -128,6 +131,8 @@ class EveShoppingAPI::Jobs::SyncPublicContractsJob < Mosquito::PeriodicJob
       # Set missing contracts status to unknown since the actual outcome cannot be determined.
       EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
     end
+
+    Log.info { "Synced publilc contracts in #{Time.monotonic - start_time} " }
   end
 
   # Resolve alliance of the issuer

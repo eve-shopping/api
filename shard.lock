@@ -8,6 +8,14 @@ shards:
     git: https://github.com/crystal-ameba/ameba.git
     version: 0.13.2
 
+  amq-protocol:
+    git: https://github.com/cloudamqp/amq-protocol.cr.git
+    version: 0.3.14
+
+  amqp-client:
+    git: https://github.com/cloudamqp/amqp-client.cr.git
+    version: 0.6.0
+
   athena:
     git: https://github.com/athena-framework/athena.git
     version: 0.10.0
@@ -44,19 +52,7 @@ shards:
     git: https://github.com/amberframework/micrate.git
     version: 0.8.0
 
-  mosquito:
-    git: https://github.com/robacarp/mosquito.git
-    version: 0.8.0
-
   pg:
     git: https://github.com/will/crystal-pg.git
     version: 0.21.1
-
-  pool:
-    git: https://github.com/ysbaddaden/pool.git
-    version: 0.2.3
-
-  redis:
-    git: https://github.com/stefanwille/crystal-redis.git
-    version: 2.6.0
 

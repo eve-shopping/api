@@ -15,7 +15,7 @@ class ESIClient
           if response.status.forbidden? && response_body.includes? "Forbidden"
             structure_id = path.match(/\/structures\/(\d+)\//).not_nil![1].to_i64
 
-            EveShoppingAPI::Models::PrivateStructure.create(id: structure_id)
+            EveShoppingAPI::Models::PrivateStructure.create(id: structure_id) unless EveShoppingAPI::Models::PrivateStructure.exists? structure_id
           end
 
           # TODO: Retry these

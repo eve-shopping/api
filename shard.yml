@@ -34,12 +34,12 @@ dependencies:
   pg:
     github: will/crystal-pg
     version: ~> 0.21.1
-  mosquito:
-    github: robacarp/mosquito
-    version: ~> 0.8.0
   concurrent:
     github: didactic-drunk/concurrent.cr
     version: ~> 0.1.0
+  amqp-client:
+    github: cloudamqp/amqp-client.cr
+    version: ~> 0.6.0
 
 development_dependencies:
   ameba:
