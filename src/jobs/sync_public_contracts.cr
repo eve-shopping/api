@@ -101,7 +101,14 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
               end
 
               # Enqueue a message to process the items within this contract
-              channel.basic_publish contract.id.to_json, exchange: "amq.topic", routing_key: "contract.items" if contract.type.item_exchange? || contract.type.auction?
+              if contract.type.item_exchange? || contract.type.auction?
+                channel.basic_publish(
+                  contract.id.to_json,
+                  exchange: "amq.topic",
+                  routing_key: "contract.items",
+                  props: AMQP::Client::Properties.new(delivery_mode: 2)
+                )
+              end
             end
           rescue ex : Exception
             Log.warn { "Skipping contract #{contract.id} in region #{region.id} due to exception: #{ex.message}" }
