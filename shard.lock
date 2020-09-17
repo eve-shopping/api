@@ -14,7 +14,7 @@ shards:
 
   amqp-client:
     git: https://github.com/cloudamqp/amqp-client.cr.git
-    version: 0.6.0
+    version: 0.6.0+git.commit.4e452f6b00fef98332335fc7fd0e8ae250a40410
 
   athena:
     git: https://github.com/athena-framework/athena.git

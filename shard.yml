@@ -41,7 +41,7 @@ dependencies:
     version: ~> 0.1.0
   amqp-client:
     github: cloudamqp/amqp-client.cr
-    version: ~> 0.6.0
+    commit: 4e452f6b00fef98332335fc7fd0e8ae250a40410
 
 development_dependencies:
   ameba:
