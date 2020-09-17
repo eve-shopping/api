@@ -5,6 +5,8 @@ struct EveShoppingAPI::Jobs::ContractItems
 
   def execute
     EveShoppingAPI::AMQPConnectionFactory.channel do |ch|
+      ch.basic_qos 100
+
       ch.basic_consume("contract.items", tag: "contract.items", block: true, no_ack: false, work_pool: 20) do |msg|
         contract_id = Int32.from_json msg.body_io
 
@@ -25,6 +27,7 @@ struct EveShoppingAPI::Jobs::ContractItems
           EveShoppingAPI::Models::ContractItem.import contract_items
         rescue ex : Exception
           Log.error { "Failed to save items for contract #{contract_id}: #{ex.message}" }
+          raise ex
         end
       rescue ex : ::Exception
         msg.reject
