@@ -1,7 +1,5 @@
 require "athena-serializer"
 
-Log.setup "athena.*", :info
-
 require "./common"
 
 module EveShoppingAPI::Jobs

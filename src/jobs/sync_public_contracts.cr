@@ -7,7 +7,7 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
   @corporation_alliance_map = Hash(Int32, Int32?).new
   @structure_corporation_map = Hash(Int64, Int32).new
 
-  @private_structure_ids = [] of Int64
+  @private_structure_ids : Array(Int64) = EveShoppingAPI::Models::PrivateStructure.all.map(&.id.not_nil!)
 
   @esi_client = ESIClient.new
 
@@ -20,7 +20,6 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
 
     outstanding_contract_ids = EveShoppingAPI::Models::Contract.all("WHERE status = 'outstanding'").map &.id
     active_contract_ids = Array(Int32).new
-    @private_structure_ids = EveShoppingAPI::Models::PrivateStructure.all.map &.id.not_nil!
 
     sem = Concurrent::Semaphore.new 20
 
