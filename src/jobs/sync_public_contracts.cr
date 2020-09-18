@@ -28,17 +28,20 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
 
       spawn do
         sem.acquire do
-          Log.info { "Processing contracts in region #{region.id}" }
+          Log.context.set region_id: region.id
+
+          Log.info { "Processing public contracts" }
 
           begin
             public_contracts = @esi_client.request_all("/v1/contracts/public/#{region.id}/", EveShoppingAPI::Models::Contract)
           rescue ex : Exception
-            Log.warn { "Skipping region #{region.id} due to exception: #{ex.message}" }
+            Log.warn(exception: ex) { "Skipping region due to exception" }
             regions_channel.send false
             next
           end
 
           public_contracts.not_nil!.each do |contract|
+            Log.context.set contract_id: contract.id
             active_contract_ids << contract.id
 
             # Skip already saved contracts
@@ -51,7 +54,7 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
               next if @private_structure_ids.includes?(end_location_id)
             end
 
-            Log.info { "Processing new contract #{contract.id} in region #{region.id}" }
+            Log.info { "Processing new contract" }
 
             # Fix some data before processing it
             contract.availability = :public
@@ -64,14 +67,14 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
               # Skip trying to save contracts whose locations could not be resolved
               # E.x. Not public
               unless self.resolve_structure_affiliation contract.start_location_id
-                Log.info { "Skipping invalid contract #{contract.id} in region #{region.id}: private start location" }
+                Log.info { "Skipping invalid contract: private start location" }
                 next
               end
             end
 
             if !contract.is_end_station? && (end_location_id = contract.end_location_id)
               unless self.resolve_structure_affiliation end_location_id
-                Log.info { "Skipping invalid contract #{contract.id} in region #{region.id}: private end location" }
+                Log.info { "Skipping invalid contract: private end location" }
                 next
               end
             end
@@ -105,12 +108,15 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
                   contract.id.to_json,
                   exchange: "amq.topic",
                   routing_key: "contract.items",
-                  props: AMQP::Client::Properties.new(delivery_mode: 2)
+                  props: AMQP::Client::Properties.new(
+                    delivery_mode: 2,
+                    headers: AMQP::Client::Arguments.new({"retry_threshold" => 5})
+                  )
                 )
               end
             end
           rescue ex : Exception
-            Log.warn { "Skipping contract #{contract.id} in region #{region.id} due to exception: #{ex.message}" }
+            Log.warn(exception: ex) { "Skipping contract due to exception" }
             next
           end
 
@@ -150,7 +156,7 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
       Log.debug { "Caching character #{character_id}" }
 
       unless EveShoppingAPI::Models::Character.exists? character_id
-        Log.info { "Saving new character #{character_id}" }
+        Log.info &.emit "Saving new character", character_id: character_id
 
         return unless character = @esi_client.request "/v4/characters/#{character_id}/" do |response|
                         EveShoppingAPI::Models::Character.from_json response.body_io
@@ -188,7 +194,7 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
     structure.id = structure_id
 
     unless EveShoppingAPI::Models::Structure.exists? structure_id
-      Log.info { "Saving new structure #{structure_id}" }
+      Log.info &.emit "Saving new structure", structure_id: structure_id
       structure.save!
     end
 
@@ -215,13 +221,13 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
     corporation.id = corporation_id
 
     unless EveShoppingAPI::Models::Corporation.exists? corporation_id
-      Log.info { "Saving new corporation #{corporation_id}" }
+      Log.info &.emit "Saving new corporation", corporation_id: corporation_id
       corporation.save!
     end
 
     corporation.alliance_id.try do |alliance_id|
       unless EveShoppingAPI::Models::Alliance.exists? alliance_id
-        Log.info { "Saving new alliance #{alliance_id}" }
+        Log.info &.emit "Saving new alliance", alliance_id: alliance_id
 
         return unless alliance = @esi_client.request "/v3/alliances/#{alliance_id}/" do |response|
                         EveShoppingAPI::Models::Alliance.from_json response.body_io

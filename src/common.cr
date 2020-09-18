@@ -66,3 +66,15 @@ module EveShoppingAPI::ServiceAccount
     @@expires_at = Time.utc + @@access_token.not_nil!.expires_in.not_nil!.seconds
   end
 end
+
+Log.define_formatter SingleLineFormatter, %(#{timestamp} #{severity} - #{source(after: ": ")}#{message}" "#{data(before: " -- ")}#{context(before: " -- ")}#{exception(before: " Ex: ")})
+
+struct SingleLineFormatter
+  def exception(*, before = "Ex: ", after = nil)
+    if ex = @entry.exception
+      @io << before
+      @io << ex.message
+      @io << after
+    end
+  end
+end

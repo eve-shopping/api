@@ -1,6 +1,6 @@
 require "./worker"
 
-Log.setup :info
+Log.setup(:info, Log::IOBackend.new(formatter: SingleLineFormatter))
 
 spawn do
   loop do

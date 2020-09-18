@@ -10,7 +10,13 @@ struct EveShoppingAPI::Jobs::ContractItems
       ch.basic_consume("contract.items", tag: "contract.items", block: true, no_ack: false, work_pool: 50) do |msg|
         contract_id = Int32.from_json msg.body_io
 
-        Log.info { "Fetching items for contract #{contract_id}" }
+        headers = msg.properties.headers.not_nil!
+        retry_count = headers.has_key?("x-death") ? headers["x-death"].as(Array)[0].as(AMQ::Protocol::Table)["count"].as(Int64) : 0
+        retry_threshold = (threshold = headers["retry_threshold"]?) ? threshold.as(Int32) : 0
+
+        Log.context.set retry: retry_count, retry_threshold: retry_threshold, contract_id: contract_id
+
+        Log.info { "Fetching contract items" }
 
         contract_items = @esi_client.request_all("/v1/contracts/public/items/#{contract_id}/", EveShoppingAPI::Models::ContractItem)
 
@@ -26,11 +32,16 @@ struct EveShoppingAPI::Jobs::ContractItems
         EveShoppingAPI::Models::ContractItem.adapter.database.transaction do
           EveShoppingAPI::Models::ContractItem.import contract_items
         rescue ex : Exception
-          Log.error { "Failed to save items for contract #{contract_id}: #{ex.message}" }
+          Log.error(exception: ex) { "Failed to save items" }
           raise ex
         end
       rescue ex : ::Exception
-        msg.reject
+        if retry_threshold && retry_count.not_nil! < retry_threshold
+          msg.reject
+        else
+          Log.warn(exception: ex) { "Failed to process message" }
+          msg.ack
+        end
       else
         msg.ack
       end
