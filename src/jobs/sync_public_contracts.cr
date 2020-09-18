@@ -135,14 +135,14 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
 
     Log.debug { "Calculating diff" }
 
-    # missing_ids = outstanding_contract_ids - active_contract_ids
+    missing_ids = outstanding_contract_ids - active_contract_ids
 
-    # if !missing_ids.empty? && !region_skipped
-    #   Log.info { "Invalidating #{missing_ids.size} contract(s)" }
+    if !missing_ids.empty? && !region_skipped
+      Log.info { "Invalidating #{missing_ids.size} contract(s)" }
 
-    #   # Set missing contracts status to unknown since the actual outcome cannot be determined.
-    #   EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
-    # end
+      # Set missing contracts status to unknown since the actual outcome cannot be determined.
+      EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
+    end
 
     Log.info { "Synced publilc contracts in #{Time.monotonic - start_time} " }
   end
