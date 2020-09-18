@@ -18,22 +18,22 @@ struct EveShoppingAPI::Jobs::ContractItems
 
         Log.info { "Fetching contract items" }
 
-        contract_items = @esi_client.request_all("/v1/contracts/public/items/#{contract_id}/", EveShoppingAPI::Models::ContractItem)
+        @esi_client.request_all("/v1/contracts/public/items/#{contract_id}/", EveShoppingAPI::Models::ContractItem) do |contract_items|
+          contract_items.each do |contract_item|
+            contract_item.contract_id = contract_id
 
-        contract_items.each do |contract_item|
-          contract_item.contract_id = contract_id
-
-          # TODO: Remove this once https://github.com/esi/esi-issues/issues/1241 is resolved
-          if !contract_item.is_blueprint_copy && !contract_item.material_efficiency.nil?
-            contract_item.runs = -1
+            # TODO: Remove this once https://github.com/esi/esi-issues/issues/1241 is resolved
+            if !contract_item.is_blueprint_copy && !contract_item.material_efficiency.nil?
+              contract_item.runs = -1
+            end
           end
-        end
 
-        EveShoppingAPI::Models::ContractItem.adapter.database.transaction do
-          EveShoppingAPI::Models::ContractItem.import contract_items
-        rescue ex : Exception
-          Log.error(exception: ex) { "Failed to save items" }
-          raise ex
+          EveShoppingAPI::Models::ContractItem.adapter.database.transaction do
+            EveShoppingAPI::Models::ContractItem.import contract_items
+          rescue ex : Exception
+            Log.error(exception: ex) { "Failed to save items" }
+            raise ex
+          end
         end
       rescue ex : ::Exception
         if retry_threshold && retry_count.not_nil! < retry_threshold

@@ -35,6 +35,14 @@ class ESIClient
   end
 
   def request_all(path : String, type : T.class) : Array(T) forall T
+    data = Array(T).new
+    request_all(path, type) do |page|
+      data.concat page
+    end
+    data
+  end
+
+  def request_all(path : String, type : T.class, & : Array(T), Int32 -> Nil) : Nil forall T
     self.with_client do |client|
       response = client.get(path)
 
@@ -48,7 +56,10 @@ class ESIClient
 
       Log.debug { "#{path} has #{pages} page(s)" }
 
-      return data if pages.nil? || pages == 1
+      if pages.nil? || pages == 1
+        yield data, 1
+        return
+      end
 
       (2..pages).each do |page|
         self.with_client do |inner_client|
@@ -62,12 +73,10 @@ class ESIClient
               raise Exception.new response.body_io.gets_to_end
             end
 
-            data.concat ASR.serializer.deserialize(Array(T), response.body_io, :json)
+            yield ASR.serializer.deserialize(Array(T), response.body_io, :json), page
           end
         end
       end
-
-      data
     end
   end
 

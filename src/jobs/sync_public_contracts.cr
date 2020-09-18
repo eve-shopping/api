@@ -32,95 +32,93 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
 
           Log.info { "Processing public contracts" }
 
-          begin
-            public_contracts = @esi_client.request_all("/v1/contracts/public/#{region.id}/", EveShoppingAPI::Models::Contract)
+          @esi_client.request_all("/v1/contracts/public/#{region.id}/", EveShoppingAPI::Models::Contract) do |public_contracts, page|
+            public_contracts.not_nil!.each do |contract|
+              Log.context.set contract_id: contract.id, page: page
+              active_contract_ids << contract.id
+
+              # Skip already saved contracts
+              next if outstanding_contract_ids.includes? contract.id
+
+              # Skip private structures
+              next if @private_structure_ids.includes?(contract.start_location_id)
+
+              if (end_location_id = contract.end_location_id)
+                next if @private_structure_ids.includes?(end_location_id)
+              end
+
+              Log.info { "Processing new contract" }
+
+              # Fix some data before processing it
+              contract.availability = :public
+              contract.status = :outstanding
+              contract.origin = :public
+
+              self.resolve_issuer_affiliation contract
+
+              if !contract.is_start_station?
+                # Skip trying to save contracts whose locations could not be resolved
+                # E.x. Not public
+                unless self.resolve_structure_affiliation contract.start_location_id
+                  Log.info { "Skipping invalid contract: private start location" }
+                  next
+                end
+              end
+
+              if !contract.is_end_station? && (end_location_id = contract.end_location_id)
+                unless self.resolve_structure_affiliation end_location_id
+                  Log.info { "Skipping invalid contract: private end location" }
+                  next
+                end
+              end
+
+              EveShoppingAPI::Models::Contract.adapter.database.transaction do
+                contract.save!
+
+                unless contract.is_start_station?
+                  structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+                  structure_affiliation.contract_id = contract.id
+                  structure_affiliation.origin = :start
+                  structure_affiliation.structure_id = contract.start_location_id
+                  structure_affiliation.corporation_id = @structure_corporation_map[contract.start_location_id]
+                  structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+                  structure_affiliation.save!
+                end
+
+                if !contract.is_end_station? && (end_location_id = contract.end_location_id)
+                  structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
+                  structure_affiliation.contract_id = contract.id
+                  structure_affiliation.origin = :end
+                  structure_affiliation.structure_id = end_location_id
+                  structure_affiliation.corporation_id = @structure_corporation_map[end_location_id]
+                  structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
+                  structure_affiliation.save!
+                end
+
+                # Enqueue a message to process the items within this contract
+                if contract.type.item_exchange? || contract.type.auction?
+                  channel.basic_publish(
+                    contract.id.to_json,
+                    exchange: "amq.topic",
+                    routing_key: "contract.items",
+                    props: AMQP::Client::Properties.new(
+                      delivery_mode: 2,
+                      headers: AMQP::Client::Arguments.new({"retry_threshold" => 5})
+                    )
+                  )
+                end
+              end
+            rescue ex : Exception
+              Log.warn(exception: ex) { "Skipping contract due to exception" }
+              next
+            end
+
+            regions_channel.send true
           rescue ex : Exception
             Log.warn(exception: ex) { "Skipping region due to exception" }
             regions_channel.send false
             next
           end
-
-          public_contracts.not_nil!.each do |contract|
-            Log.context.set contract_id: contract.id
-            active_contract_ids << contract.id
-
-            # Skip already saved contracts
-            next if outstanding_contract_ids.includes? contract.id
-
-            # Skip private structures
-            next if @private_structure_ids.includes?(contract.start_location_id)
-
-            if (end_location_id = contract.end_location_id)
-              next if @private_structure_ids.includes?(end_location_id)
-            end
-
-            Log.info { "Processing new contract" }
-
-            # Fix some data before processing it
-            contract.availability = :public
-            contract.status = :outstanding
-            contract.origin = :public
-
-            self.resolve_issuer_affiliation contract
-
-            if !contract.is_start_station?
-              # Skip trying to save contracts whose locations could not be resolved
-              # E.x. Not public
-              unless self.resolve_structure_affiliation contract.start_location_id
-                Log.info { "Skipping invalid contract: private start location" }
-                next
-              end
-            end
-
-            if !contract.is_end_station? && (end_location_id = contract.end_location_id)
-              unless self.resolve_structure_affiliation end_location_id
-                Log.info { "Skipping invalid contract: private end location" }
-                next
-              end
-            end
-
-            EveShoppingAPI::Models::Contract.adapter.database.transaction do
-              contract.save!
-
-              unless contract.is_start_station?
-                structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
-                structure_affiliation.contract_id = contract.id
-                structure_affiliation.origin = :start
-                structure_affiliation.structure_id = contract.start_location_id
-                structure_affiliation.corporation_id = @structure_corporation_map[contract.start_location_id]
-                structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
-                structure_affiliation.save!
-              end
-
-              if !contract.is_end_station? && (end_location_id = contract.end_location_id)
-                structure_affiliation = EveShoppingAPI::Models::ContractStructureAffiliation.new
-                structure_affiliation.contract_id = contract.id
-                structure_affiliation.origin = :end
-                structure_affiliation.structure_id = end_location_id
-                structure_affiliation.corporation_id = @structure_corporation_map[end_location_id]
-                structure_affiliation.alliance_id = @corporation_alliance_map[structure_affiliation.corporation_id]
-                structure_affiliation.save!
-              end
-
-              # Enqueue a message to process the items within this contract
-              if contract.type.item_exchange? || contract.type.auction?
-                channel.basic_publish(
-                  contract.id.to_json,
-                  exchange: "amq.topic",
-                  routing_key: "contract.items",
-                  props: AMQP::Client::Properties.new(
-                    delivery_mode: 2,
-                    headers: AMQP::Client::Arguments.new({"retry_threshold" => 5})
-                  )
-                )
-              end
-            end
-          rescue ex : Exception
-            Log.warn(exception: ex) { "Skipping contract due to exception" }
-            next
-          end
-
-          regions_channel.send true
         end
       ensure
         channel.close
@@ -135,14 +133,16 @@ struct EveShoppingAPI::Jobs::SyncPublicContractsJob
       end
     end
 
-    missing_ids = outstanding_contract_ids - active_contract_ids
+    Log.debug { "Calculating diff" }
 
-    if !missing_ids.empty? && !region_skipped
-      Log.info { "Invalidating #{missing_ids.size} contract(s)" }
+    # missing_ids = outstanding_contract_ids - active_contract_ids
 
-      # Set missing contracts status to unknown since the actual outcome cannot be determined.
-      EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
-    end
+    # if !missing_ids.empty? && !region_skipped
+    #   Log.info { "Invalidating #{missing_ids.size} contract(s)" }
+
+    #   # Set missing contracts status to unknown since the actual outcome cannot be determined.
+    #   EveShoppingAPI::Models::Contract.exec %(UPDATE "contracts" SET "status" = 'unknown' WHERE "id" IN (#{missing_ids.join(",")});)
+    # end
 
     Log.info { "Synced publilc contracts in #{Time.monotonic - start_time} " }
   end
